@@ -1,111 +1,115 @@
 # -*- coding: utf-8 -*-
 """
-격자 단위 주거건축물 다양성(Shannon Index) 결과를 행정동 단위로 집계하여
-Streamlit 웹지도용 경량 GeoJSON으로 변환하는 전처리 스크립트.
+서울시 행정동별 주거건축물 유형 다양성(Shannon Index) 지도
+Streamlit Cloud 배포용
 
-** 로컬 Spyder에서 1회만 실행 ** (Streamlit 앱 자체에는 geopandas를 쓰지 않음 -
-   Streamlit Cloud에서 GDAL/geopandas 설치가 까다롭고 자주 실패하기 때문)
-
-출력물: seoul_dong_diversity.geojson  -> 이 파일을 app.py와 함께 GitHub repo에 올리면 됨
+같은 repo 폴더에 seoul_dong_diversity.geojson 파일이 있어야 함
+(전처리 스크립트 preprocess_dong_diversity.py로 로컬에서 미리 생성)
 """
 
-import geopandas as gpd
+import json
 import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+st.set_page_config(page_title="서울시 주거건축물 다양성 지도", layout="wide")
+
+DONG_NAME_COL = "adm_nm"
+DONG_CODE_COL = "adm_cd2"
+GEOJSON_PATH = "seoul_dong_diversity.geojson"
 
 # =========================================================
-# 0. 경로 설정
+# 데이터 로드 (캐싱으로 재실행 시 매번 새로 안 읽도록)
 # =========================================================
-GRID_RESULT_GPKG = r"seoul_housing_diversity_grid.gpkg"   # 이전 단계 결과물
-DONG_SHP = r"bnd_dong_11_2024_2Q.shp"                       # 행정동 경계 (SGIS에서 다운로드), 경로 수정 필요
-OUT_GEOJSON = r"seoul_dong_diversity.geojson"
+@st.cache_data
+def load_data():
+    with open(GEOJSON_PATH, encoding="utf-8") as f:
+        geojson = json.load(f)
 
-# =========================================================
-# 1. 데이터 로드
-# =========================================================
-grid = gpd.read_file(GRID_RESULT_GPKG)      # EPSG:5179, columns: GRID_CD, shannon, n_bldg, n_type
-dong = gpd.read_file(DONG_SHP)              # 행정동 경계
+    rows = [feat["properties"] for feat in geojson["features"]]
+    df = pd.DataFrame(rows)
+    return geojson, df
 
-print("=== 격자 결과 ===")
-print(grid.crs, grid.shape)
-print(grid.columns.tolist())
-
-print("\n=== 행정동 경계 ===")
-print(dong.crs, dong.shape)
-print(dong.columns.tolist())
-print(dong.head(3))
-
-# ↑ 이 출력 보고 행정동명/행정동코드 컬럼명이 ADM_NM, ADM_CD가 맞는지 확인!
-#   다르면 아래 DONG_NAME_COL, DONG_CODE_COL 값을 실제 컬럼명으로 바꿔주세요.
-DONG_NAME_COL = "ADM_NM"
-DONG_CODE_COL = "ADM_CD"
+geojson, df = load_data()
 
 # =========================================================
-# 2. 좌표계 통일
+# 사이드바
 # =========================================================
-if grid.crs != dong.crs:
-    dong = dong.to_crs(grid.crs)
-
-# =========================================================
-# 3. 격자 중심점 - 행정동 공간조인
-# =========================================================
-grid_pt = grid.copy()
-grid_pt['geometry'] = grid_pt.geometry.centroid
-
-joined = gpd.sjoin(
-    grid_pt[['GRID_CD', 'shannon', 'n_bldg', 'n_type', 'geometry']],
-    dong[[DONG_NAME_COL, DONG_CODE_COL, 'geometry']],
-    how='inner', predicate='within'
-)
-print(f"\n격자->행정동 매칭 수: {len(joined)} / 전체 격자 {len(grid)}")
-
-# 건물이 하나도 없는 격자(shannon=0, n_bldg=0)는 다양성 집계에서 제외
-joined_valid = joined[joined['n_bldg'] > 0].copy()
-
-# =========================================================
-# 4. 행정동별 집계
-# =========================================================
-# 다양성 지수는 건물 수로 가중평균 (건물 10채 격자와 1채 격자를 동일하게 반영하면 왜곡되므로)
-def weighted_mean(df, val_col, weight_col):
-    w = df[weight_col]
-    return (df[val_col] * w).sum() / w.sum() if w.sum() > 0 else 0
-
-agg_rows = []
-for code, g in joined_valid.groupby(DONG_CODE_COL):
-    name = g[DONG_NAME_COL].iloc[0]
-    agg_rows.append({
-        DONG_CODE_COL: code,
-        DONG_NAME_COL: name,
-        'shannon_mean': weighted_mean(g, 'shannon', 'n_bldg'),   # 건물수 가중평균 다양성
-        'n_bldg_sum': int(g['n_bldg'].sum()),                     # 행정동 내 총 주거건물 수
-        'n_grid': g['GRID_CD'].nunique()                          # 집계에 쓰인 격자 수
-    })
-
-dong_stat = pd.DataFrame(agg_rows)
-print("\n=== 행정동별 집계 결과 (상위 10개) ===")
-print(dong_stat.sort_values('shannon_mean', ascending=False).head(10))
-
-# =========================================================
-# 5. 지오메트리 결합 + 웹지도용 좌표계(WGS84)로 변환 + 경량화
-# =========================================================
-dong_result = dong[[DONG_CODE_COL, DONG_NAME_COL, 'geometry']].merge(
-    dong_stat.drop(columns=[DONG_NAME_COL]), on=DONG_CODE_COL, how='left'
+st.sidebar.title("서울시 주거건축물 다양성")
+st.sidebar.markdown(
+    "행정동 단위로 집계한 **Shannon Diversity Index**입니다.\n\n"
+    "단독주택 / 아파트 / 연립주택 / 다세대주택 4개 유형의 "
+    "건물 수 비율로 계산했으며, 값이 클수록 여러 유형이 고르게 섞여 있다는 뜻입니다."
 )
 
-# 다양성 데이터 없는 행정동(주거건물이 거의 없는 상업/공업 지역 등)은 0 처리
-dong_result[['shannon_mean', 'n_bldg_sum', 'n_grid']] = (
-    dong_result[['shannon_mean', 'n_bldg_sum', 'n_grid']].fillna(0)
+min_bldg = st.sidebar.slider(
+    "최소 건물 수 필터 (표본이 너무 적은 동 제외)",
+    min_value=0, max_value=int(df["n_bldg_sum"].max()),
+    value=10, step=10
 )
 
-# 웹지도(folium/leaflet/plotly)는 WGS84(EPSG:4326) 위경도 좌표를 씀
-dong_result = dong_result.to_crs(epsg=4326)
-
-# GitHub/Streamlit Cloud에 올릴 거라 파일 용량을 줄여야 함 -> 경계선 단순화
-# tolerance 단위는 degree (대략 0.0005 ~= 50m 수준 단순화, 필요시 조정)
-dong_result['geometry'] = dong_result.geometry.simplify(0.0005, preserve_topology=True)
+df_filtered = df[df["n_bldg_sum"] >= min_bldg].copy()
 
 # =========================================================
-# 6. GeoJSON 저장
+# 메인 - 지도
 # =========================================================
-dong_result.to_file(OUT_GEOJSON, driver='GeoJSON')
-print(f"\n저장 완료: {OUT_GEOJSON}")
-print(f"파일 크기 확인 후 (수 MB 넘으면) simplify tolerance를 더 키우는 걸 권장")
+st.title("서울시 행정동별 주거건축물 유형 다양성 지도")
+
+fig = px.choropleth_mapbox(
+    df_filtered,
+    geojson=geojson,
+    locations=DONG_CODE_COL,
+    featureidkey=f"properties.{DONG_CODE_COL}",
+    color="shannon_mean",
+    color_continuous_scale="Blues",
+    range_color=(df["shannon_mean"].min(), df["shannon_mean"].max()),
+    mapbox_style="carto-positron",
+    zoom=10,
+    center={"lat": 37.5665, "lon": 126.9780},
+    opacity=0.75,
+    hover_name=DONG_NAME_COL,
+    hover_data={
+        DONG_CODE_COL: False,
+        "shannon_mean": ":.3f",
+        "n_bldg_sum": True,
+        "n_grid": True,
+    },
+    labels={
+        "shannon_mean": "다양성 지수",
+        "n_bldg_sum": "주거건물 수",
+        "n_grid": "집계 격자 수",
+    },
+)
+fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0}, height=700)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# =========================================================
+# 랭킹 테이블
+# =========================================================
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("다양성 지수 상위 10개 동")
+    top10 = df_filtered.sort_values("shannon_mean", ascending=False).head(10)
+    st.dataframe(
+        top10[[DONG_NAME_COL, "shannon_mean", "n_bldg_sum"]]
+        .rename(columns={DONG_NAME_COL: "행정동", "shannon_mean": "다양성 지수", "n_bldg_sum": "건물 수"})
+        .reset_index(drop=True),
+        use_container_width=True,
+    )
+
+with col2:
+    st.subheader("다양성 지수 하위 10개 동")
+    bottom10 = df_filtered.sort_values("shannon_mean", ascending=True).head(10)
+    st.dataframe(
+        bottom10[[DONG_NAME_COL, "shannon_mean", "n_bldg_sum"]]
+        .rename(columns={DONG_NAME_COL: "행정동", "shannon_mean": "다양성 지수", "n_bldg_sum": "건물 수"})
+        .reset_index(drop=True),
+        use_container_width=True,
+    )
+
+st.caption(
+    "데이터 출처: 브이월드 GIS건물통합정보(AL_D010), 통계청 100m 표준격자, SGIS 행정동 경계 | "
+    "다양성 지수는 격자별 Shannon Index를 건물 수로 가중평균하여 행정동 단위로 집계함"
+)
