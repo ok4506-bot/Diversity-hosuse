@@ -18,7 +18,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 격자 해상도별 geojson 파일 경로 (둘 다 repo 루트에 있어야 함)
 GEOJSON_PATHS = {
-    "100m": os.path.join(BASE_DIR, "..", "seoul_grid_diversity.geojson"),
+    "100m": os.path.join(BASE_DIR, "..", "seoul_grid_diversity2.geojson"),
     "500m": os.path.join(BASE_DIR, "..", "seoul_grid_diversity_500m.geojson"),
 }
 
