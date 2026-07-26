@@ -18,7 +18,7 @@ st.set_page_config(page_title="서울시 주거건축물 다양성 지도", layo
 # (Streamlit 멀티페이지 앱은 실행 위치가 repo 루트/페이지 폴더로 뒤섞일 수 있어서
 #  __file__ 기준 절대경로를 쓰는 게 안전함)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-GEOJSON_PATH = os.path.join(BASE_DIR, "..", "seoul_grid_diversity.geojson")
+GEOJSON_PATH = os.path.join(BASE_DIR, "..", "seoul_grid_diversity2.geojson")
 
 
 @st.cache_data
@@ -36,17 +36,21 @@ st.caption(
 )
 
 # =========================================================
-# 사이드바 - 표시 지표 선택
+# 사이드바 - 레이어 토글 (동시에 겹쳐서 표시 가능)
 # =========================================================
 st.sidebar.title("표시 옵션")
 
-view_mode = st.sidebar.radio(
-    "지도에 표시할 지표",
-    ["다양성 지수 (Shannon)", "공간 클러스터 (LISA)"],
-)
+show_shannon = st.sidebar.checkbox("다양성 지수 표시 (채우기 색)", value=True)
+show_lisa = st.sidebar.checkbox("공간 클러스터 표시 (테두리 색, LISA)", value=False)
 
 min_bldg = st.sidebar.slider("최소 건물 수 필터", 0, 50, 0, step=1)
-opacity = st.sidebar.slider("격자 투명도", 0.1, 1.0, 0.7, step=0.1)
+
+st.sidebar.markdown("---")
+
+if show_shannon:
+    shannon_opacity = st.sidebar.slider("다양성 지수 투명도", 0.1, 1.0, 0.6, step=0.1)
+if show_lisa:
+    lisa_line_width = st.sidebar.slider("클러스터 테두리 두께", 1, 8, 3, step=1)
 
 features = [
     f for f in geojson["features"]
@@ -56,52 +60,58 @@ filtered_geojson = {"type": "FeatureCollection", "features": features}
 
 st.sidebar.markdown(f"현재 표시 중: **{len(features):,}개** 격자")
 
-# 모드에 따라 색상 필드/툴팁/범례를 다르게 구성
-if view_mode == "다양성 지수 (Shannon)":
-    color_field = "properties.shannon_color"
-    tooltip_html = (
-        "<b>격자 코드:</b> {GRID_CD}<br/>"
-        "<b>다양성 지수:</b> {shannon}<br/>"
-        "<b>주거건물 수:</b> {n_bldg}<br/>"
-        "<b>유형 수:</b> {n_type}"
-    )
+if show_shannon:
     st.sidebar.markdown(
-        "**범례**\n\n"
+        "**다양성 지수 범례**\n\n"
         "🔵 진한 파랑 = 다양성 높음 (여러 유형 혼재)\n\n"
         "⚪ 연한 파랑 = 다양성 낮음 (한 유형 위주)"
     )
-else:
-    color_field = "properties.lisa_color"
-    tooltip_html = (
-        "<b>격자 코드:</b> {GRID_CD}<br/>"
-        "<b>클러스터:</b> {lisa_cluster}<br/>"
-        "<b>p-value:</b> {lisa_p}<br/>"
-        "<b>다양성 지수:</b> {shannon}<br/>"
-        "<b>주거건물 수:</b> {n_bldg}"
-    )
+if show_lisa:
     st.sidebar.markdown(
-        "**범례 (Local Moran's I)**\n\n"
-        "🔴 High-High = 다양성 핫스팟 (높은 값끼리 군집)\n\n"
-        "🔵 Low-Low = 다양성 콜드스팟 (낮은 값끼리 군집)\n\n"
-        "🟠 High-Low / 🔵 Low-High = 주변과 동떨어진 이상치\n\n"
+        "**LISA 클러스터 범례 (테두리)**\n\n"
+        "🔴 High-High = 다양성 핫스팟\n\n"
+        "🔵 Low-Low = 다양성 콜드스팟\n\n"
+        "🟠🔵 High-Low / Low-High = 이상치\n\n"
         "⚪ 회색 = 통계적으로 유의하지 않음"
     )
 
 # =========================================================
-# 지도 (pydeck / deck.gl)
+# 지도 (pydeck / deck.gl) - 두 레이어를 겹쳐서 표시
 # =========================================================
-layer = pdk.Layer(
-    "GeoJsonLayer",
-    filtered_geojson,
-    opacity=opacity,
-    stroked=True,
-    filled=True,
-    get_fill_color=color_field,
-    get_line_color=[255, 255, 255, 60],
-    line_width_min_pixels=0.5,
-    pickable=True,
-    auto_highlight=True,
-)
+layers = []
+
+if show_shannon:
+    layers.append(pdk.Layer(
+        "GeoJsonLayer",
+        filtered_geojson,
+        id="shannon-layer",
+        opacity=shannon_opacity,
+        stroked=False,
+        filled=True,
+        get_fill_color="properties.shannon_color",
+        pickable=True,
+        auto_highlight=True,
+    ))
+
+if show_lisa:
+    # 유의하지 않은(Not Significant) 격자는 테두리를 그리면 지도가 지저분해지므로 제외
+    lisa_features = [
+        f for f in filtered_geojson["features"]
+        if f["properties"]["lisa_cluster"] != "Not Significant"
+    ]
+    lisa_geojson = {"type": "FeatureCollection", "features": lisa_features}
+
+    layers.append(pdk.Layer(
+        "GeoJsonLayer",
+        lisa_geojson,
+        id="lisa-layer",
+        filled=False,
+        stroked=True,
+        get_line_color="properties.lisa_color",
+        line_width_min_pixels=lisa_line_width,
+        pickable=True,
+        auto_highlight=True,
+    ))
 
 view_state = pdk.ViewState(
     latitude=37.5665,
@@ -111,18 +121,26 @@ view_state = pdk.ViewState(
 )
 
 tooltip = {
-    "html": tooltip_html,
+    "html": (
+        "<b>격자 코드:</b> {GRID_CD}<br/>"
+        "<b>다양성 지수:</b> {shannon}<br/>"
+        "<b>클러스터:</b> {lisa_cluster} (p={lisa_p})<br/>"
+        "<b>주거건물 수:</b> {n_bldg}<br/>"
+        "<b>유형 수:</b> {n_type}"
+    ),
     "style": {"backgroundColor": "steelblue", "color": "white"},
 }
 
-deck = pdk.Deck(
-    layers=[layer],
-    initial_view_state=view_state,
-    tooltip=tooltip,
-    map_style="light",
-)
-
-st.pydeck_chart(deck, use_container_width=True, height=700)
+if layers:
+    deck = pdk.Deck(
+        layers=layers,
+        initial_view_state=view_state,
+        tooltip=tooltip,
+        map_style="light",
+    )
+    st.pydeck_chart(deck, use_container_width=True, height=700)
+else:
+    st.info("사이드바에서 표시할 레이어를 하나 이상 선택해주세요.")
 
 st.caption(
     "데이터 출처: 브이월드 GIS건물통합정보(AL_D010), 통계청 100m 표준격자 | "
