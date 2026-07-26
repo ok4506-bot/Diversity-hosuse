@@ -8,12 +8,17 @@ Streamlit Cloud 배포용 - geopandas 없이 pydeck(deck.gl)만 사용
 """
 
 import json
+import os
 import pydeck as pdk
 import streamlit as st
 
 st.set_page_config(page_title="서울시 주거건축물 다양성 지도", layout="wide")
 
-GEOJSON_PATH = "seoul_grid_diversity.geojson"
+# 이 스크립트 파일이 있는 폴더를 기준으로 경로를 잡음
+# (Streamlit 멀티페이지 앱은 실행 위치가 repo 루트/페이지 폴더로 뒤섞일 수 있어서
+#  __file__ 기준 절대경로를 쓰는 게 안전함)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+GEOJSON_PATH = os.path.join(BASE_DIR, "..", "seoul_grid_diversity.geojson")
 
 
 @st.cache_data
