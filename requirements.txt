@@ -2,3 +2,8 @@ streamlit
 pandas
 plotly
 pydeck
+streamlit-folium
+folium
+branca
+numpy
+matplotlib
